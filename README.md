@@ -1,161 +1,95 @@
 # mac-cleanup
 
-### A cleanup script for macOS
+> Forked from [mac-cleanup/mac-cleanup-sh](https://github.com/mac-cleanup/mac-cleanup-sh), originally published under
+> the MIT License.
 
-</br>
+Developer-focused macOS cleanup with explicit risk levels, per-action reporting, and safe automatic mode.
 
-<details>
-  <summary>
-  What does script do?
-  </summary>
+## Usage
 
-</br>
+### Interactive mode
 
-* Empty the Trash on All Mounted Volumes and the Main HDD
-* Clear System Log Files
-* Clear Adobe Cache Files
-* Cleanup iOS Applications
-* Remove iOS Device Backups
-* Cleanup Xcode Derived Data and Archives
-* Reset iOS simulators
-* Cleanup Homebrew Cache
-* Cleanup Any Old Versions of Gems
-* Cleanup Dangling Docker Images
-* Purge Inactive Memory
-* Cleanup pip cache
-* Cleanup Pyenv-VirtualEnv Cache
-* Cleanup npm Cache
-* Cleanup Yarn Cache
-* Cleanup Docker Images and Stopped Containers
-* Cleanup CocoaPods Cache Files
-* Cleanup composer cache
-* Cleanup Dropbox cache
-* Remove PhpStorm logs
-* Remove Minecraft logs and cache
-* Remove Steam logs and cache
-* Remove Lunar Client logs and cache
-* Remove Microsoft Teams logs and cache
-* Remove Wget logs and hosts
-* Removes Cacher logs
-* Deletes Android caches
-* Clears Gradle caches
-* Deletes Kite logs
-* Clears Go module cache
-* Clears Poetry cache
-
-</details>
-
-
-
-## Install Automatically
-
-### Using homebrew
+Offers every applicable action individually. Every prompt defaults to **No**.
 
 ```bash
-brew tap fwartner/tap
-brew install fwartner/tap/mac-cleanup
+./mac-cleanup.sh
 ```
-<details>
-  <summary>
-  Error: SHA256 mismatch
-  </summary>
 
-> If you'll see ```Error: SHA256 mismatch``` try this:
-> 1. Copy "Actual" hash from error
-> 2. Run ```brew edit fwartner/tap/mac-cleanup```
-> 3. Press ```I``` and change ```sha256 "<some hash>"``` with hash from step 1
-> 4. Press ```:```, then ```wq``` and ```Enter```
-> 5. Re-run installation \
-> ```brew install fwartner/tap/mac-cleanup```
+### Automatic cache cleanup
 
-</details>
-
-
-### Using curl
+Runs only actions classified as `SAFE`. Caution and destructive actions are reported as skipped.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mac-cleanup/mac-cleanup-sh/main/installer.sh | bash -s install
+./mac-cleanup.sh --auto
 ```
 
-### Using wget
+### Unsafe automatic cleanup
+
+Runs every applicable action without prompting.
 
 ```bash
-wget https://raw.githubusercontent.com/mac-cleanup/mac-cleanup-sh/main/installer.sh -O - | bash -s install
+./mac-cleanup.sh --auto --unsafe
 ```
 
-## Step by Step Install
+This may permanently remove iOS backups, Xcode archives and dSYMs, simulator data, stopped Docker containers, cloud
+content caches, and application state.
 
-1. Download: `curl -o cleanup https://raw.githubusercontent.com/mac-cleanup/mac-cleanup-sh/main/mac-cleanup`
-2. Make it executable: `chmod +x cleanup`
-3. Move to make it globally usable: `sudo mv cleanup /usr/local/bin/cleanup`
-
-### Note:
-If installing with curl you need to call `cleanup` instead of `mac-cleanup`.
-
-## Update
-
-### Using curl
+### Preview
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/mac-cleanup/mac-cleanup-sh/main/installer.sh" | bash -s update
+./mac-cleanup.sh --dry-run
+./mac-cleanup.sh --auto --dry-run
+./mac-cleanup.sh --auto --unsafe --dry-run
 ```
 
-### Using wget
+## Options
+
+| Option            | Behavior                                              |
+|-------------------|-------------------------------------------------------|
+| `--auto`          | Run only allowlisted `SAFE` actions without prompting |
+| `--unsafe`        | Include all risk levels; requires `--auto`            |
+| `--dry-run`       | Show selected actions without executing commands      |
+| `--skip-docker`   | Exclude Docker cleanup                                |
+| `-u`, `--update`  | Include separate Homebrew update and upgrade actions  |
+| `-v`, `--verbose` | Print the complete command log                        |
+| `--no-color`      | Disable colored output                                |
+
+## Risk levels
+
+| Risk          | Meaning                                                     | Interactive           | `--auto` | `--auto --unsafe` |
+|---------------|-------------------------------------------------------------|-----------------------|----------|-------------------|
+| `SAFE`        | Regenerable cache                                           | Ask                   | Run      | Run               |
+| `CAUTION`     | Trash, logs, broad caches, or environment changes           | Warn and ask          | Skip     | Run               |
+| `DESTRUCTIVE` | Backups, archives, application state, or stopped containers | Strongly warn and ask | Skip     | Run               |
+
+The script refuses to run as root. It no longer deletes system cache directories, `/private/var/folders`, wget HSTS
+state, or flushes DNS and inactive memory because those operations are inappropriate for routine disk cleanup.
+
+## macOS privacy permissions
+
+Run the script as your normal login user, not with `sudo`:
 
 ```bash
-wget "https://raw.githubusercontent.com/mac-cleanup/mac-cleanup-sh/main/installer.sh" -O - | bash -s update
+./mac-cleanup.sh
 ```
 
-## Uninstall
+Some user locations, including Trash and application containers, are protected by macOS Transparency, Consent, and
+Control (TCC). When access is denied, the action is reported as `protected-skipped` and cleanup continues.
 
-### Using curl
+`sudo` handles Unix file ownership but does not reliably bypass TCC. For protected locations, grant Full Disk Access to
+the application hosting the shell:
 
-```bash
-curl -fsSL "https://raw.githubusercontent.com/mac-cleanup/mac-cleanup-sh/main/installer.sh" | bash -s uninstall
-```
+1. Open **System Settings → Privacy & Security → Full Disk Access**.
+2. Enable Terminal, iTerm, OpenCode, or the relevant host application.
+3. Completely restart that application.
 
-### Using wget
+The current cleanup set does not need root ownership. Any future root-owned action must elevate only its individual
+command; the complete script should never be launched with `sudo`.
 
-```bash
-wget "https://raw.githubusercontent.com/mac-cleanup/mac-cleanup-sh/main/installer.sh" -O - | bash -s uninstall
-```
+## Important limitations
 
-## Usage Options
-
-Help menu:
-
-```
-$ mac-cleanup -h
-
-A Mac Cleanup Utility by fwartner
-https://github.com/mac-cleanup/mac-cleanup-sh
-
-USAGE:
- mac-cleanup [FLAGS]
-
-FLAGS:
--h, --help       Prints help menu
--d, --dry-run    Print approx space to be cleaned
--v, --verbose    Print script debug info
--u, --update     Run brew update
-```
-
-## Contributors
-
-### Code Contributors
-
-This project exists thanks to all the people who contribute.
-<a href="https://github.com/mac-cleanup/mac-cleanup-sh/graphs/contributors"><img src="https://opencollective.com/mac-cleanup/contributors.svg?width=890&button=false" /></a>
-
-<a href="https://opencollective.com/mac-cleanup/organization/0/website"><img src="https://opencollective.com/mac-cleanup/organization/0/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/1/website"><img src="https://opencollective.com/mac-cleanup/organization/1/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/2/website"><img src="https://opencollective.com/mac-cleanup/organization/2/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/3/website"><img src="https://opencollective.com/mac-cleanup/organization/3/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/4/website"><img src="https://opencollective.com/mac-cleanup/organization/4/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/5/website"><img src="https://opencollective.com/mac-cleanup/organization/5/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/6/website"><img src="https://opencollective.com/mac-cleanup/organization/6/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/7/website"><img src="https://opencollective.com/mac-cleanup/organization/7/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/8/website"><img src="https://opencollective.com/mac-cleanup/organization/8/avatar.svg"></a>
-<a href="https://opencollective.com/mac-cleanup/organization/9/website"><img src="https://opencollective.com/mac-cleanup/organization/9/avatar.svg"></a>
-
-If you like what I am doing please consider [sponsor my work](https://github.com/sponsors/fwartner)!
+- Quit applications before deleting their caches.
+- Package caches may be required for offline or historical builds.
+- `df` measurements are observations, not exact per-command savings; APFS and background writes can affect them.
+- Docker prune retains volumes but deletes stopped containers and their writable layers.
+- Xcode archives can contain release artifacts and dSYMs required for crash symbolication.
