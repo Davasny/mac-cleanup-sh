@@ -519,6 +519,25 @@ print_report() {
 	done
 }
 
+print_reclaimed_summary() {
+	local before=$1
+	local after=$2
+	local delta
+
+	if [[ "$dry_run" == true ]]; then
+		msg 'Total reclaimed space: not measured (dry run)'
+		return 0
+	fi
+
+	if [[ -z "$before" || -z "$after" ]]; then
+		msg 'Total reclaimed space: unavailable'
+		return 0
+	fi
+
+	delta=$((after - before))
+	msg "Total reclaimed space: $(human_kib "$delta")"
+}
+
 run_cleanups() {
 	# Broad/user-managed data.
 	run_action trash-user CAUTION 'Trash: current user' "$HOME/.Trash/*" \
@@ -632,13 +651,19 @@ run_cleanups() {
 }
 
 main() {
+	local start_kib=''
+	local end_kib=''
+
 	parse_params "$@"
 	setup_colors
 	validate_environment
 	create_run_log
 	print_mode_banner
+	start_kib=$(available_kib) || start_kib=''
 	run_cleanups
+	end_kib=$(available_kib) || end_kib=''
 	print_report
+	print_reclaimed_summary "$start_kib" "$end_kib"
 
 	if [[ "$verbose" == true && -s "$RUN_LOG" ]]; then
 		msg ''
