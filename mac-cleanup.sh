@@ -13,21 +13,28 @@ update=false
 SKIP_CODES=()
 
 ACTION_CODES=(
-	trash-user logs-mail logs-simulator logs-jetbrains
+	trash-user cache-user-library
+	cache-system-library cache-global-library
+	logs-system-asl logs-diagnostic-reports logs-creative-cloud logs-adobe-system logs-adobegc
+	logs-mail logs-simulator logs-jetbrains
 	cache-adobe-media cache-chrome
 	ios-ipa-archives ios-device-backups
 	xcode-derived-data xcode-archives xcode-device-logs
 	simulator-delete-unavailable simulator-erase-all
 	cache-gradle cache-android cache-composer cache-npm cache-pnpm cache-uv
-	cache-pip cache-cocoapods cache-go-build cache-yarn rubygems-cleanup
-	homebrew-cleanup homebrew-update homebrew-upgrade
+	cache-pip cache-cocoapods cache-go-build cache-go-modules cache-yarn
+	cache-poetry cache-pyenv rubygems-cleanup
+	homebrew-cleanup homebrew-cache homebrew-repair homebrew-update homebrew-upgrade
 	cache-dropbox cache-google-drive cache-steam steam-downloads
+	logs-steam cache-minecraft logs-minecraft cache-lunar logs-lunar
+	logs-cacher logs-kite logs-wget java-heap-dumps
 	cache-teams teams-reset docker-prune
 )
 
 RUN_LOG=''
 KEEP_LOG=false
 SUDO_KEEPALIVE_PID=''
+SUDO_READY=false
 FAILED_COUNT=0
 PROTECTED_COUNT=0
 
@@ -212,6 +219,25 @@ create_run_log() {
 	chmod 600 "$RUN_LOG" || die 'Could not secure the command log.'
 }
 
+ensure_sudo() {
+	if [[ "$SUDO_READY" != true ]] || ! sudo -n true >/dev/null 2>&1; then
+		printf >/dev/tty '\nAdministrator access is required for this system-owned target.\n'
+		if ! sudo -v; then
+			return 69
+		fi
+		SUDO_READY=true
+	fi
+
+	if [[ -z "$SUDO_KEEPALIVE_PID" ]] || ! kill -0 "$SUDO_KEEPALIVE_PID" >/dev/null 2>&1; then
+		(
+			while sudo -n true >/dev/null 2>&1; do
+				sleep 60
+			done
+		) &
+		SUDO_KEEPALIVE_PID=$!
+	fi
+}
+
 available_kib() {
 	local value
 	value=$(df -kP / 2>/dev/null | awk 'END {print $4}') || return 1
@@ -394,6 +420,20 @@ assert_delete_path() {
 	return 0
 }
 
+assert_system_cleanup_path() {
+	case "$1" in
+	/Library/Caches | /System/Library/Caches | /private/var/log/asl | \
+		/Library/Logs/DiagnosticReports | /Library/Logs/CreativeCloud | /Library/Logs/Adobe)
+		return 0
+		;;
+	esac
+	return 64
+}
+
+assert_system_cleanup_file() {
+	[[ "$1" == '/Library/Logs/adobegc.log' ]]
+}
+
 directory_is_listable() {
 	local directory=$1
 	[[ -d "$directory" ]] || return 0
@@ -430,6 +470,91 @@ remove_named_children() {
 	[[ -d "$directory" ]] || return 0
 	directory_is_listable "$directory" || return 77
 	find "$directory" -mindepth 1 -maxdepth 1 -name "$pattern" -exec rm -rf -- {} +
+}
+
+sudo_remove_children() {
+	local directory=$1
+	assert_system_cleanup_path "$directory" || {
+		printf >&2 'Refusing unapproved system cleanup path: %s\n' "$directory"
+		return 64
+	}
+	[[ -d "$directory" ]] || return 0
+	ensure_sudo || return
+	sudo find "$directory" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
+sudo_remove_file() {
+	local path=$1
+	assert_system_cleanup_file "$path" || {
+		printf >&2 'Refusing unapproved system cleanup file: %s\n' "$path"
+		return 64
+	}
+	[[ -e "$path" ]] || return 0
+	ensure_sudo || return
+	sudo rm -f -- "$path"
+}
+
+remove_home_matches() {
+	local pattern=$1
+	[[ -d "$HOME" ]] || return 0
+	find "$HOME" -mindepth 1 -maxdepth 1 -name "$pattern" -exec rm -rf -- {} +
+}
+
+remove_minecraft_caches() {
+	local base="$HOME/Library/Application Support/minecraft"
+	remove_path "$base/webcache" || return
+	remove_path "$base/webcache2" || return
+	remove_path "$base/.mixin.out"
+}
+
+remove_minecraft_logs() {
+	local base="$HOME/Library/Application Support/minecraft"
+	remove_path "$base/logs" || return
+	remove_path "$base/crash-reports" || return
+	remove_path "$base/launcher_cef_log.txt" || return
+	remove_named_children "$base" '*.log'
+}
+
+remove_lunar_caches() {
+	local base="$HOME/.lunarclient"
+	remove_path "$base/game-cache" || return
+	remove_path "$base/launcher-cache"
+}
+
+remove_lunar_logs() {
+	local base="$HOME/.lunarclient"
+	local path
+	remove_path "$base/logs" || return
+	for path in "$base"/offline/*/logs "$base"/offline/files/*/logs; do
+		[[ -e "$path" ]] || continue
+		remove_path "$path" || return
+	done
+}
+
+remove_validated_pyenv_cache() {
+	local path=${PYENV_VIRTUALENV_CACHE_PATH:-}
+	[[ -n "$path" && "$path" == /* ]] || return 64
+	case "$path" in
+	"$HOME"/.pyenv/*cache* | "$HOME"/Library/Caches/*) ;;
+	*)
+		printf >&2 'Refusing pyenv cache outside an approved user cache path: %s\n' "$path"
+		return 64
+		;;
+	esac
+	remove_path "$path"
+}
+
+remove_brew_cache() {
+	local path
+	path=$(brew --cache) || return
+	case "$path" in
+	"$HOME"/Library/Caches/Homebrew | /Library/Caches/Homebrew) ;;
+	*)
+		printf >&2 'Refusing unexpected Homebrew cache path: %s\n' "$path"
+		return 64
+		;;
+	esac
+	remove_children "$path"
 }
 
 remove_drivefs_content_cache() {
@@ -543,6 +668,30 @@ run_cleanups() {
 	run_action trash-user CAUTION 'Trash: current user' "$HOME/.Trash/*" \
 		'Removes recoverable files currently placed in Trash.' \
 		remove_children "$HOME/.Trash"
+	run_action cache-user-library CAUTION 'Cache: all user applications' "$HOME/Library/Caches/*" \
+		'Removes all user application caches; close applications first. Some protected entries may remain.' \
+		remove_children "$HOME/Library/Caches"
+
+	# System-owned caches and logs. These are destructive, require targeted sudo,
+	# and may be blocked by System Integrity Protection on modern macOS.
+	run_action cache-global-library DESTRUCTIVE 'Cache: global Library' '/Library/Caches/*' \
+		'Removes machine-wide application and service caches; running services may be disrupted.' \
+		sudo_remove_children '/Library/Caches'
+	run_action cache-system-library DESTRUCTIVE 'Cache: System Library' '/System/Library/Caches/*' \
+		'Removes protected macOS caches. SIP normally blocks this and failures are expected.' \
+		sudo_remove_children '/System/Library/Caches'
+	run_action logs-system-asl DESTRUCTIVE 'Logs: system ASL' '/private/var/log/asl/*' \
+		'Removes legacy system logs and diagnostic history managed by macOS.' \
+		sudo_remove_children '/private/var/log/asl'
+	run_action logs-diagnostic-reports DESTRUCTIVE 'Logs: system diagnostic reports' '/Library/Logs/DiagnosticReports/*' \
+		'Removes machine-wide crash and diagnostic reports used for troubleshooting.' \
+		sudo_remove_children '/Library/Logs/DiagnosticReports'
+	run_action logs-creative-cloud CAUTION 'Logs: Creative Cloud' '/Library/Logs/CreativeCloud/*' \
+		'Removes machine-wide Creative Cloud logs.' sudo_remove_children '/Library/Logs/CreativeCloud'
+	run_action logs-adobe-system CAUTION 'Logs: Adobe system' '/Library/Logs/Adobe/*' \
+		'Removes machine-wide Adobe logs.' sudo_remove_children '/Library/Logs/Adobe'
+	run_action logs-adobegc CAUTION 'Logs: Adobe GC' '/Library/Logs/adobegc.log' \
+		'Removes the machine-wide Adobe GC diagnostic log.' sudo_remove_file '/Library/Logs/adobegc.log'
 
 	# Logs and diagnostics are deliberately excluded from safe automatic mode.
 	run_action logs-mail CAUTION 'Logs: Apple Mail' "$HOME/Library/Containers/com.apple.mail/Data/Library/Logs/Mail/*" \
@@ -604,8 +753,17 @@ run_cleanups() {
 		'Removes cached pod packages; dependencies may need to be downloaded again.' pod cache clean --all
 	command -v go >/dev/null 2>&1 && run_action cache-go-build SAFE 'Cache: Go build' 'go clean -cache -testcache' \
 		'Removes Go build and test caches without deleting the module download cache.' go clean -cache -testcache
+	command -v go >/dev/null 2>&1 && run_action cache-go-modules CAUTION 'Cache: Go modules' 'go clean -modcache' \
+		'Removes every downloaded Go module; unavailable versions may not be recoverable.' go clean -modcache
 	command -v yarn >/dev/null 2>&1 && run_action cache-yarn CAUTION 'Cache: Yarn' 'yarn cache clean' \
 		'Behavior differs by Yarn version and may remove a project-local zero-install cache.' yarn cache clean
+	[[ -d "$HOME/Library/Caches/pypoetry" ]] && run_action cache-poetry SAFE 'Cache: Poetry' "$HOME/Library/Caches/pypoetry" \
+		'Removes Poetry package caches; packages will be downloaded again.' remove_path "$HOME/Library/Caches/pypoetry"
+	if [[ -n "${PYENV_VIRTUALENV_CACHE_PATH:-}" ]]; then
+		run_action cache-pyenv CAUTION 'Cache: pyenv-virtualenv' "$PYENV_VIRTUALENV_CACHE_PATH" \
+			'Removes the configured pyenv-virtualenv cache after validating that it is under an approved user cache path.' \
+			remove_validated_pyenv_cache
+	fi
 	command -v gem >/dev/null 2>&1 && run_action rubygems-cleanup DESTRUCTIVE 'RubyGems: old installed versions' 'gem cleanup' \
 		'Removes old installed gem versions and may break scripts pinned to them.' gem cleanup
 
@@ -613,6 +771,10 @@ run_cleanups() {
 	if command -v brew >/dev/null 2>&1; then
 		run_action homebrew-cleanup SAFE 'Homebrew: cleanup' 'brew cleanup -s' \
 			'Removes old downloads and outdated package artifacts managed by Homebrew.' brew cleanup -s
+		run_action homebrew-cache CAUTION 'Homebrew: complete download cache' 'contents of brew --cache' \
+			'Removes all files in Homebrew download cache, including current downloads.' remove_brew_cache
+		run_action homebrew-repair CAUTION 'Homebrew: repair taps' 'brew tap --repair' \
+			'Repairs and mutates Homebrew tap Git repositories; this is maintenance rather than cleanup.' brew tap --repair
 		if [[ "$update" == true ]]; then
 			run_action homebrew-update CAUTION 'Homebrew: update metadata' 'brew update' \
 				'Fetches current formula and cask metadata.' brew update
@@ -634,7 +796,33 @@ run_cleanups() {
 		run_action steam-downloads DESTRUCTIVE 'Steam: downloads and staging' 'Steam steamapps/download and steamapps/temp' \
 			'Removes active or staged game downloads and updates.' \
 			remove_steam_staging
+		run_action logs-steam CAUTION 'Logs: Steam' "$HOME/Library/Application Support/Steam/logs" \
+			'Removes Steam diagnostic logs; close Steam first.' \
+			remove_path "$HOME/Library/Application Support/Steam/logs"
 	fi
+
+	if [[ -d "$HOME/Library/Application Support/minecraft" ]]; then
+		run_action cache-minecraft SAFE 'Cache: Minecraft' 'Minecraft webcache, webcache2, and .mixin.out' \
+			'Removes regenerable Minecraft launcher and mixin caches; close Minecraft first.' remove_minecraft_caches
+		run_action logs-minecraft CAUTION 'Logs: Minecraft' 'Minecraft logs, crash reports, and launcher logs' \
+			'Removes Minecraft diagnostics and crash reports.' remove_minecraft_logs
+	fi
+
+	if [[ -d "$HOME/.lunarclient" ]]; then
+		run_action cache-lunar SAFE 'Cache: Lunar Client' 'Lunar Client game-cache and launcher-cache' \
+			'Removes regenerable Lunar Client caches; close Lunar Client first.' remove_lunar_caches
+		run_action logs-lunar CAUTION 'Logs: Lunar Client' 'Lunar Client logs and offline profile logs' \
+			'Removes Lunar Client diagnostic logs.' remove_lunar_logs
+	fi
+
+	[[ -d "$HOME/.cacher/logs" ]] && run_action logs-cacher CAUTION 'Logs: Cacher' "$HOME/.cacher/logs" \
+		'Removes Cacher diagnostic logs.' remove_path "$HOME/.cacher/logs"
+	[[ -d "$HOME/.kite/logs" ]] && run_action logs-kite CAUTION 'Logs: Kite' "$HOME/.kite/logs" \
+		'Removes logs from the discontinued KiteXcode tool.' remove_path "$HOME/.kite/logs"
+	[[ -f "$HOME/wget-log" ]] && run_action logs-wget CAUTION 'Logs: wget' "$HOME/wget-log" \
+		'Removes wget output log; wget HSTS security state is retained.' remove_path "$HOME/wget-log"
+	run_action java-heap-dumps DESTRUCTIVE 'Java: heap dumps' "$HOME/*.hprof" \
+		'Removes Java heap dumps that may contain valuable out-of-memory diagnostics.' remove_home_matches '*.hprof'
 
 	if [[ -d "$HOME/Library/Application Support/Microsoft/Teams" ]]; then
 		run_action cache-teams CAUTION 'Teams: regenerable caches' 'Teams Cache, Application Cache, Code Cache, GPU cache, tmp' \
