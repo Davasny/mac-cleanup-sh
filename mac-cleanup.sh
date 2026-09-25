@@ -403,6 +403,7 @@ run_action() {
 		FAILED_COUNT=$((FAILED_COUNT + 1))
 		KEEP_LOG=true
 		msg "    ${ORANGE}failed with exit ${status}${NOFORMAT}"
+		msg "    observed root free-space change: $(human_kib "$delta") (partial cleanup may have succeeded)"
 		msg '    diagnostic tail:'
 		tail -n 8 "$RUN_LOG" >&2
 		record_result "$code" "$label" "$risk" "$delta" "exit-$status"
@@ -634,7 +635,7 @@ print_report() {
 	printf >&2 '%-29s %-32s %-11s %12s %-16s\n' 'Code' 'Action' 'Risk' 'Net' 'Status'
 	printf >&2 '%-29s %-32s %-11s %12s %-16s\n' '-----------------------------' '--------------------------------' '-----------' '------------' '----------------'
 	for ((i = 0; i < ${#REPORT_LABELS[@]}; i++)); do
-		if [[ "${REPORT_STATUSES[i]}" == 'ok' ]]; then
+		if [[ "${REPORT_STATUSES[i]}" == 'ok' || "${REPORT_STATUSES[i]}" == exit-* ]]; then
 			delta=$(human_kib "${REPORT_DELTAS[i]}")
 		else
 			delta='-'

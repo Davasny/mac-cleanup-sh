@@ -170,6 +170,7 @@ be launched with `sudo`.
 - Quit applications before deleting their caches.
 - Package caches may be required for offline or historical builds.
 - `df` measurements are observations, not exact per-command savings; APFS and background writes can affect them.
+- Failed actions can still remove some files; their measured free-space change appears in the report alongside the failure status.
 - The final `Total reclaimed space` line reports the observed root-filesystem free-space change for the complete run.
 - Docker prune retains volumes but deletes stopped containers and their writable layers.
 - Xcode archives can contain release artifacts and dSYMs required for crash symbolication.
