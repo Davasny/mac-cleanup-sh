@@ -11,6 +11,7 @@ dry_run=false
 verbose=false
 update=false
 SKIP_CODES=()
+ONLY_CODES=()
 
 ACTION_CODES=(
 	trash-user cache-user-library
@@ -91,6 +92,7 @@ Options:
   -u, --update         Offer Homebrew update and upgrade actions
   --dry-run            Show selected actions without executing them
   --skip CODES         Skip comma-separated action codes
+  --only CODES         Consider only comma-separated action codes (risk rules still apply)
   --no-color           Disable colored output
 
 Risk levels:
@@ -127,6 +129,34 @@ add_skip_codes() {
 	IFS=$old_ifs
 }
 
+add_only_codes() {
+	local value=$1
+	local code
+	local old_ifs=$IFS
+	[[ -n "$value" ]] || die '--only requires at least one action code' 2
+	case "$value" in
+	,* | *, | *,,*) die '--only contains an empty action code' 2 ;;
+	esac
+
+	IFS=','
+	for code in $value; do
+		[[ -n "$code" && "$code" != *[!a-z0-9-]* ]] || die "Invalid action code in --only: $code" 2
+		is_known_code "$code" || die "Unknown action code in --only: $code" 2
+		ONLY_CODES[${#ONLY_CODES[@]}]="$code"
+	done
+	IFS=$old_ifs
+}
+
+action_is_included() {
+	local wanted=$1
+	local code
+	((${#ONLY_CODES[@]} == 0)) && return 0
+	for code in "${ONLY_CODES[@]}"; do
+		[[ "$code" == "$wanted" ]] && return 0
+	done
+	return 1
+}
+
 action_is_skipped() {
 	local wanted=$1
 	local code
@@ -157,6 +187,12 @@ parse_params() {
 			shift
 			;;
 		--skip=*) add_skip_codes "${1#--skip=}" ;;
+		--only)
+			(($# >= 2)) || die '--only requires a comma-separated code list' 2
+			add_only_codes "$2"
+			shift
+			;;
+		--only=*) add_only_codes "${1#--only=}" ;;
 		--no-color) NO_COLOR=1 ;;
 		-*) die "Unknown option: $1" 2 ;;
 		*) die "Unexpected argument: $1" 2 ;;
@@ -344,6 +380,9 @@ run_action() {
 	local after=0
 	local delta=0
 	local status=0
+
+	# Omitted actions are not offered, executed, or included in the report.
+	action_is_included "$code" || return 0
 
 	if action_is_skipped "$code"; then
 		msg "${YELLOW}[$(risk_label "$risk")] [${code}] ${label} - skipped by --skip${NOFORMAT}"
@@ -606,6 +645,7 @@ erase_all_simulators() {
 
 print_mode_banner() {
 	local skipped
+	local included
 	msg "${GREEN}mac-cleanup ${SCRIPT_VERSION}${NOFORMAT}"
 	case "$MODE" in
 	interactive)
@@ -623,6 +663,10 @@ print_mode_banner() {
 	if ((${#SKIP_CODES[@]} > 0)); then
 		skipped=$(IFS=,; printf '%s' "${SKIP_CODES[*]}")
 		msg "Skipped action codes: $skipped"
+	fi
+	if ((${#ONLY_CODES[@]} > 0)); then
+		included=$(IFS=,; printf '%s' "${ONLY_CODES[*]}")
+		msg "Only action codes: $included"
 	fi
 	[[ "$dry_run" == true ]] && msg "${CYAN}Dry run: no commands will be executed.${NOFORMAT}"
 }

@@ -51,6 +51,19 @@ Each cleanup action has a stable code shown in prompts and reports. Pass one or 
 ./mac-cleanup.sh --auto --skip cache-npm,cache-pnpm
 ```
 
+### Run only specific actions
+
+Use `--only` to limit the run to a few codes (or `--only=CODES`). Interactive mode still asks before each action;
+`--auto` runs only `SAFE` selections, and `--auto --unsafe` runs all selected risk levels without prompting.
+Unavailable actions are not run, and Homebrew update/upgrade still require `--update`. If combined with `--skip`,
+skipped codes take precedence.
+
+```bash
+./mac-cleanup.sh --only cache-npm,xcode-derived-data
+./mac-cleanup.sh --auto --only cache-npm,cache-pnpm
+./mac-cleanup.sh --auto --unsafe --only trash-user --dry-run
+```
+
 Prompts display the risk and code separately:
 
 ```text
@@ -65,6 +78,7 @@ Prompts display the risk and code separately:
 | `--unsafe`        | Include all risk levels; requires `--auto`            |
 | `--dry-run`       | Show selected actions without executing commands      |
 | `--skip CODES`    | Skip comma-separated action codes                     |
+| `--only CODES`    | Consider only comma-separated action codes            |
 | `-u`, `--update`  | Include separate Homebrew update and upgrade actions  |
 | `-v`, `--verbose` | Print the complete command log                        |
 | `--no-color`      | Disable colored output                                |
