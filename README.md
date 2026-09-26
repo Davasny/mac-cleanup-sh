@@ -110,6 +110,7 @@ require `--update`.
 | `cache-composer`               | `SAFE`        | Yes                | Clear Composer's package download cache.                                                              |
 | `cache-npm`                    | `SAFE`        | Yes                | Clear npm's package cache.                                                                            |
 | `cache-pnpm`                   | `SAFE`        | Yes                | Prune unreferenced packages from the pnpm store.                                                      |
+| `cache-corepack`               | `CAUTION`     | No                 | Clear Corepack's downloaded package-manager versions; offline projects may need them.                 |
 | `cache-uv`                     | `SAFE`        | Yes                | Clear uv's package cache.                                                                             |
 | `cache-pip`                    | `SAFE`        | Yes                | Clear pip's download and wheel caches.                                                                |
 | `cache-cocoapods`              | `SAFE`        | Yes                | Clear cached CocoaPods packages.                                                                      |

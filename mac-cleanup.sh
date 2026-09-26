@@ -21,7 +21,7 @@ ACTION_CODES=(
 	ios-ipa-archives ios-device-backups
 	xcode-derived-data xcode-archives xcode-device-logs
 	simulator-delete-unavailable simulator-erase-all
-	cache-gradle cache-android cache-composer cache-npm cache-pnpm cache-uv
+	cache-gradle cache-android cache-composer cache-npm cache-pnpm cache-corepack cache-uv
 	cache-pip cache-cocoapods cache-go-build cache-go-modules cache-yarn
 	cache-poetry cache-pyenv rubygems-cleanup
 	homebrew-cleanup homebrew-cache homebrew-repair homebrew-update homebrew-upgrade
@@ -744,6 +744,8 @@ run_cleanups() {
 		'Removes npm cache; packages will be downloaded again.' npm cache clean --force
 	command -v pnpm >/dev/null 2>&1 && run_action cache-pnpm SAFE 'Cache: pnpm store' 'pnpm store prune' \
 		'Removes unreferenced packages from the pnpm store.' pnpm store prune
+	command -v corepack >/dev/null 2>&1 && run_action cache-corepack CAUTION 'Cache: Corepack' 'corepack cache clean' \
+		'Removes downloaded package-manager versions; they may be needed for offline projects.' corepack cache clean
 	command -v uv >/dev/null 2>&1 && run_action cache-uv SAFE 'Cache: uv' 'uv cache clean' \
 		'Removes uv package cache; packages will be downloaded again.' uv cache clean
 	if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
