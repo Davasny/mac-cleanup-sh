@@ -30,6 +30,7 @@ ACTION_CODES=(
 	logs-steam cache-minecraft logs-minecraft cache-lunar logs-lunar
 	logs-cacher logs-kite logs-wget java-heap-dumps
 	cache-teams teams-reset docker-prune
+	wallpapers-aerials
 )
 
 RUN_LOG=''
@@ -637,6 +638,309 @@ reset_teams_state() {
 	remove_named_children "$base" '*watchdog*.json'
 }
 
+# --- Wallpaper and screensaver aerial videos --------------------------------
+#
+# macOS 26 "Tahoe" downloads aerial movies to
+#   ~/Library/Application Support/com.apple.wallpaper/aerials/videos/*.mov
+# with a catalog at .../aerials/manifest/entries.json. Older releases kept
+# root-owned movies one directory deep under
+#   /Library/Application Support/com.apple.idleassetsd/Customer/
+# Both share the wallpaper selection at
+#   ~/Library/Application Support/com.apple.wallpaper/Store/Index.plist.
+#
+# A movie is considered unused only when its UUID is a known catalog asset and
+# is not referenced, directly or through a category/subcategory shuffle
+# selection, by the active configuration. Unknown movies are never touched, and
+# detection refuses to run when an aerial provider is configured but no
+# selection can be parsed.
+
+WALLPAPER_INDEX_PLIST="$HOME/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
+AERIAL_TAHOE_VIDEOS="$HOME/Library/Application Support/com.apple.wallpaper/aerials/videos"
+AERIAL_TAHOE_MANIFEST="$HOME/Library/Application Support/com.apple.wallpaper/aerials/manifest/entries.json"
+AERIAL_LEGACY_SYSTEM_BASE='/Library/Application Support/com.apple.idleassetsd/Customer'
+AERIAL_LEGACY_USER_BASE="$HOME/Library/Application Support/com.apple.idleassetsd/Customer"
+
+AERIALS_UNUSED_PATHS=()
+AERIALS_UNUSED_LABELS=()
+AERIALS_UNUSED_BYTES=()
+AERIALS_UNUSED_COUNT=0
+AERIALS_UNUSED_KIB=0
+
+xml_unescape() {
+	local value=$1
+	value=${value//&amp;/&}
+	value=${value//&quot;/\"}
+	value=${value//&apos;/\'}
+	value=${value//&lt;/<}
+	value=${value//&gt;/>}
+	printf '%s' "$value"
+}
+
+# Recursively print every assetID from a wallpaper Index.plist read on stdin.
+# Selection data is a binary plist embedded as <data>, so decode and recurse.
+# The same key stores individual asset IDs and category/subcategory IDs.
+wallpaper_asset_ids() {
+	local xml
+	local b64
+	xml=$(plutil -convert xml1 -o - - 2>/dev/null) || return 0
+	printf '%s\n' "$xml" | awk '
+		/<key>assetID<\/key>/ { getline; sub(/^[[:space:]]*<string>/, ""); sub(/<\/string>.*/, ""); print }
+	'
+	printf '%s\n' "$xml" | awk '
+		/<data>/ { inside = 1; buf = ""; next }
+		/<\/data>/ { inside = 0; gsub(/[[:space:]]/, "", buf); if (buf != "") print buf; next }
+		inside { buf = buf $0 }
+	' | while IFS= read -r b64; do
+		printf '%s' "$b64" | base64 -D 2>/dev/null | wallpaper_asset_ids
+	done
+}
+
+# Flatten an entries.json catalog into tab-separated records:
+#   A<TAB>asset-id<TAB>label
+#   C<TAB>category-id<TAB>asset-id
+#   S<TAB>subcategory-id<TAB>asset-id
+aerial_manifest_records() {
+	local manifest=$1
+	local xml
+	[[ -f "$manifest" ]] || return 1
+	xml=$(plutil -convert xml1 -o - "$manifest" 2>/dev/null) || return 1
+	printf '%s\n' "$xml" | awk '
+		{
+			line = $0
+			indent = 0
+			while (substr(line, indent + 1, 1) == "\t") indent++
+			body = substr(line, indent + 1)
+		}
+		body == "<key>assets</key>" && indent == 1 { want_assets = 1; next }
+		body ~ /^<key>/ && indent == 1 { want_assets = 0; next }
+		want_assets && body == "<array>" && indent == 1 { in_assets = 1; want_assets = 0; next }
+		!in_assets { next }
+		body == "</array>" && indent == 1 { in_assets = 0; next }
+		body == "<dict>" && indent == 2 { aid = ""; label = ""; cats = ""; subs = ""; key = ""; next }
+		body == "</dict>" && indent == 2 {
+			if (aid != "") printf "A\t%s\t%s\n", aid, label
+			n = split(cats, parts, ",")
+			for (i = 1; i <= n; i++) if (parts[i] != "") printf "C\t%s\t%s\n", parts[i], aid
+			n = split(subs, parts, ",")
+			for (i = 1; i <= n; i++) if (parts[i] != "") printf "S\t%s\t%s\n", parts[i], aid
+			next
+		}
+		indent == 3 && body ~ /^<key>/ { key = body; sub(/^<key>/, "", key); sub(/<\/key>$/, "", key); next }
+		indent == 3 && body ~ /^<string>/ {
+			value = body; sub(/^<string>/, "", value); sub(/<\/string>$/, "", value)
+			if (key == "id") aid = value
+			else if (key == "accessibilityLabel") label = value
+			next
+		}
+		indent == 4 && body ~ /^<string>/ {
+			value = body; sub(/^<string>/, "", value); sub(/<\/string>$/, "", value)
+			if (key == "categories") cats = (cats == "" ? value : cats "," value)
+			else if (key == "subcategories") subs = (subs == "" ? value : subs "," value)
+			next
+		}
+	'
+}
+
+list_has_exact() {
+	local list=$1
+	local item=$2
+	[[ -n "$item" ]] || return 1
+	printf '%s\n' "$list" | grep -Fxq -- "$item"
+}
+
+aerial_label_for() {
+	local records=$1
+	local id=$2
+	printf '%s\n' "$records" | awk -F'\t' -v id="$id" '$1 == "A" && $2 == id { print $3; exit }'
+}
+
+# Expand active selection IDs to the asset IDs they protect. An ID that names
+# an asset, a category, or a subcategory is resolved; anything else is ignored.
+aerial_expand_protected() {
+	local records=$1
+	local active=$2
+	local id
+	local matches
+	for id in $active; do
+		if printf '%s\n' "$records" | awk -F'\t' -v id="$id" '$1 == "A" && $2 == id { found = 1 } END { exit !found }'; then
+			printf '%s\n' "$id"
+			continue
+		fi
+		matches=$(printf '%s\n' "$records" | awk -F'\t' -v id="$id" '$1 == "C" && $2 == id { print $3 }')
+		if [[ -z "$matches" ]]; then
+			matches=$(printf '%s\n' "$records" | awk -F'\t' -v id="$id" '$1 == "S" && $2 == id { print $3 }')
+		fi
+		[[ -n "$matches" ]] && printf '%s\n' "$matches"
+	done
+}
+
+# Asset IDs currently open by the wallpaper or screensaver renderer, used as an
+# extra guard in addition to the parsed configuration.
+aerial_playing_ids() {
+	local proc
+	local pid
+	local path
+	for proc in WallpaperAerialsExtension ScreenSaverEngine; do
+		while IFS= read -r pid; do
+			while IFS= read -r path; do
+				[[ -n "$path" ]] || continue
+				path=${path##*/}
+				printf '%s\n' "${path%.mov}"
+			done < <(lsof -Fn -p "$pid" 2>/dev/null | sed -n 's/^n\(.*\.mov\)$/\1/p')
+		done < <(pgrep -x "$proc" 2>/dev/null)
+	done
+}
+
+aerial_stores() {
+	printf '%s\n' "tahoe|$AERIAL_TAHOE_MANIFEST|$AERIAL_TAHOE_VIDEOS"
+	printf '%s\n' "legacy|$AERIAL_LEGACY_SYSTEM_BASE/entries.json|$AERIAL_LEGACY_SYSTEM_BASE"
+	printf '%s\n' "legacy|$AERIAL_LEGACY_USER_BASE/entries.json|$AERIAL_LEGACY_USER_BASE"
+}
+
+aerials_store_available() {
+	[[ -d "$AERIAL_TAHOE_VIDEOS" || -d "$AERIAL_LEGACY_SYSTEM_BASE" || -d "$AERIAL_LEGACY_USER_BASE" ]]
+}
+
+aerials_path_is_approved() {
+	case "$1" in
+	"$AERIAL_TAHOE_VIDEOS"/*.mov) return 0 ;;
+	"$AERIAL_LEGACY_SYSTEM_BASE"/*.mov | "$AERIAL_LEGACY_SYSTEM_BASE"/*/*.mov) return 0 ;;
+	"$AERIAL_LEGACY_USER_BASE"/*.mov | "$AERIAL_LEGACY_USER_BASE"/*/*.mov) return 0 ;;
+	esac
+	return 1
+}
+
+aerials_consider_path() {
+	local path=$1
+	local records=$2
+	local known=$3
+	local protected=$4
+	local uuid
+	local size
+	uuid=${path##*/}
+	uuid=${uuid%.mov}
+	list_has_exact "$known" "$uuid" || return 0
+	list_has_exact "$protected" "$uuid" && return 0
+	size=$(stat -f%z "$path" 2>/dev/null) || size=0
+	case "$size" in
+	'' | *[!0-9]*) size=0 ;;
+	esac
+	AERIALS_UNUSED_PATHS[${#AERIALS_UNUSED_PATHS[@]}]="$path"
+	AERIALS_UNUSED_LABELS[${#AERIALS_UNUSED_LABELS[@]}]="$(aerial_label_for "$records" "$uuid")"
+	AERIALS_UNUSED_BYTES[${#AERIALS_UNUSED_BYTES[@]}]="$size"
+}
+
+# Populate AERIALS_UNUSED_* with downloaded movies that no configuration
+# references. Returns non-zero when no safe determination can be made.
+aerials_detect() {
+	local config_ids
+	local playing_ids
+	local provider_present=false
+	local mode
+	local manifest
+	local root
+	local records
+	local valid_ids=''
+	local known=''
+	local protected=''
+	local path
+	local id
+	local total=0
+	local i
+
+	AERIALS_UNUSED_PATHS=()
+	AERIALS_UNUSED_LABELS=()
+	AERIALS_UNUSED_BYTES=()
+	AERIALS_UNUSED_COUNT=0
+	AERIALS_UNUSED_KIB=0
+
+	[[ -f "$WALLPAPER_INDEX_PLIST" ]] || return 1
+	command -v plutil >/dev/null 2>&1 || return 1
+
+	if plutil -convert xml1 -o - "$WALLPAPER_INDEX_PLIST" 2>/dev/null |
+		grep -q 'com.apple.wallpaper.choice.aerials'; then
+		provider_present=true
+	fi
+
+	config_ids=$(wallpaper_asset_ids <"$WALLPAPER_INDEX_PLIST") || return 1
+	if [[ -z "$config_ids" && "$provider_present" == true ]]; then
+		return 1
+	fi
+	playing_ids=$(aerial_playing_ids)
+
+	while IFS='|' read -r mode manifest root; do
+		[[ -n "$manifest" && -f "$manifest" ]] || continue
+		records=$(aerial_manifest_records "$manifest") || continue
+		[[ -n "$records" ]] || continue
+		valid_ids=$(printf '%s\n%s\n' "$valid_ids" "$(printf '%s\n' "$records" | awk -F'\t' '$1 != "" { print $2 }')")
+		known=$(printf '%s\n%s\n' "$known" "$(printf '%s\n' "$records" | awk -F'\t' '$1 == "A" { print $2 }')")
+		protected=$(printf '%s\n%s\n' "$protected" "$(aerial_expand_protected "$records" "$config_ids")")
+		case "$mode" in
+		tahoe)
+			for path in "$root"/*.mov; do
+				[[ -f "$path" ]] || continue
+				aerials_consider_path "$path" "$records" "$known" "$protected"
+			done
+			;;
+		legacy)
+			while IFS= read -r path; do
+				[[ -n "$path" ]] || continue
+				aerials_consider_path "$path" "$records" "$known" "$protected"
+			done < <(find "$root" -maxdepth 2 -type f -name '*.mov' 2>/dev/null)
+			;;
+		esac
+	done < <(aerial_stores)
+
+	# A configured selection that resolves to nothing means the catalog could
+	# not be interpreted reliably; refuse to guess which movies are unused.
+	for id in $config_ids; do
+		list_has_exact "$valid_ids" "$id" || return 1
+	done
+
+	[[ -n "$playing_ids" ]] && protected=$(printf '%s\n%s\n' "$protected" "$playing_ids")
+
+	AERIALS_UNUSED_COUNT=${#AERIALS_UNUSED_PATHS[@]}
+	for ((i = 0; i < AERIALS_UNUSED_COUNT; i++)); do
+		total=$((total + AERIALS_UNUSED_BYTES[i]))
+	done
+	AERIALS_UNUSED_KIB=$((total / 1024))
+	return 0
+}
+
+aerials_print_unused() {
+	local i
+	local label
+	msg ''
+	msg "${CYAN}Wallpaper aerials - unused downloads:${NOFORMAT}"
+	for ((i = 0; i < AERIALS_UNUSED_COUNT; i++)); do
+		label=$(xml_unescape "${AERIALS_UNUSED_LABELS[i]}")
+		msg "    ${label:-unknown} (${AERIALS_UNUSED_PATHS[i]##*/}) $(human_kib $((AERIALS_UNUSED_BYTES[i] / 1024)))"
+	done
+}
+
+cleanup_unused_aerial_videos() {
+	local i
+	local path
+	aerials_detect || {
+		printf 'Aerial configuration could not be parsed safely; nothing removed.\n'
+		return 0
+	}
+	for ((i = 0; i < ${#AERIALS_UNUSED_PATHS[@]}; i++)); do
+		path=${AERIALS_UNUSED_PATHS[i]}
+		aerials_path_is_approved "$path" || {
+			printf 'Refusing unapproved aerial path: %s\n' "$path"
+			return 1
+		}
+		if [[ -w "$path" || -w "$(dirname "$path")" ]]; then
+			rm -f -- "$path" || return
+		else
+			ensure_sudo || return
+			sudo rm -f -- "$path" || return
+		fi
+		printf 'Removed %s (%s)\n' "$path" "$(human_kib $((AERIALS_UNUSED_BYTES[i] / 1024)))"
+	done
+}
+
 erase_all_simulators() {
 	/usr/bin/osascript -e 'tell application "Simulator" to quit' >/dev/null 2>&1 || true
 	xcrun simctl shutdown all >/dev/null 2>&1 || true
@@ -876,6 +1180,23 @@ run_cleanups() {
 			'Removes regenerable Teams caches; quit Teams first.' remove_teams_cache
 		run_action teams-reset DESTRUCTIVE 'Teams: local application state' 'Teams IndexedDB, databases, Local Storage, blob storage, watchdog' \
 			'Resets local Teams state and may remove sessions, preferences, drafts, or offline data.' reset_teams_state
+	fi
+
+	# macOS wallpaper and screensaver aerial movies.
+	if action_is_included wallpapers-aerials && aerials_store_available && [[ -f "$WALLPAPER_INDEX_PLIST" ]]; then
+		if aerials_detect; then
+			if ((AERIALS_UNUSED_COUNT > 0)); then
+				if [[ "$MODE" != 'auto' ]] && ! action_is_skipped wallpapers-aerials; then
+					aerials_print_unused
+				fi
+				run_action wallpapers-aerials CAUTION 'Wallpapers: unused aerial videos' \
+					"${AERIALS_UNUSED_COUNT} unused download(s), $(human_kib "$AERIALS_UNUSED_KIB")" \
+					'Removes downloaded aerial wallpaper and screensaver movies that the current configuration does not reference, including category and subcategory shuffle selections. macOS re-downloads a movie when it is selected again.' \
+					cleanup_unused_aerial_videos
+			fi
+		else
+			msg "${YELLOW}Wallpapers: aerial cleanup skipped; the configuration could not be parsed safely.${NOFORMAT}"
+		fi
 	fi
 
 	if command -v docker >/dev/null 2>&1; then
