@@ -70,6 +70,14 @@ Prompts display the risk and code separately:
 [caution] [trash-user] Trash: current user
 ```
 
+### List action codes
+
+Print every known action code (the stable identifiers accepted by `--skip` and `--only`), one per line:
+
+```bash
+./mac-cleanup.sh --list
+```
+
 ## Options
 
 | Option            | Behavior                                              |
@@ -79,6 +87,7 @@ Prompts display the risk and code separately:
 | `--dry-run`       | Show selected actions without executing commands      |
 | `--skip CODES`    | Skip comma-separated action codes                     |
 | `--only CODES`    | Consider only comma-separated action codes            |
+| `--list`          | List every action code accepted by `--skip`/`--only`  |
 | `-u`, `--update`  | Include separate Homebrew update and upgrade actions  |
 | `-v`, `--verbose` | Print the complete command log                        |
 | `--no-color`      | Disable colored output                                |

@@ -91,6 +91,7 @@ Options:
   -h, --help           Print this help and exit
   -v, --verbose        Print the complete command log at the end
   -u, --update         Offer Homebrew update and upgrade actions
+  --list               List every action code and exit
   --dry-run            Show selected actions without executing them
   --skip CODES         Skip comma-separated action codes
   --only CODES         Consider only comma-separated action codes (risk rules still apply)
@@ -101,6 +102,10 @@ Risk levels:
   CAUTION       Logs, Trash, broad caches, or developer environment changes
   DESTRUCTIVE   Backups, archives, application state, or stopped containers
 EOF_USAGE
+}
+
+list_action_codes() {
+	printf '%s\n' "${ACTION_CODES[@]}"
 }
 
 is_known_code() {
@@ -175,6 +180,10 @@ parse_params() {
 		case "$1" in
 		-h | --help)
 			usage
+			exit 0
+			;;
+		--list)
+			list_action_codes
 			exit 0
 			;;
 		-v | --verbose) verbose=true ;;
